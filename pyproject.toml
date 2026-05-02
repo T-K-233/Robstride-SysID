@@ -1,0 +1,24 @@
+[project]
+name = "robstride-sysid-mujoco"
+version = "0.1.0"
+description = "MuJoCo system identification for Robstride RS02 actuator"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "actuator-control",
+    "mujoco[sysid]>=3.5.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "loop-rate-limiters>=1.0",
+    "tqdm>=4.66",
+    "mcap>=1.2",
+    "rerun-sdk>=0.31.4",
+]
+
+[tool.uv.sources]
+actuator-control = { git = "https://github.com/Berkeley-Humanoids/Actuator-Control.git" }
+
+[[tool.uv.index]]
+name = "mujoco-prerelease"
+url = "https://py.mujoco.org/"
+explicit = false
