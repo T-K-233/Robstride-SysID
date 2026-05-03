@@ -52,25 +52,35 @@ uv run scripts/visualize.py --recordings data/sim/ --out-dir results/sim/
 
 ## Hardware workflow
 
+Recordings are organized by actuator class (`--model`) and run number,
+auto-incremented by `collect.py`:
+
+```
+data/<model>/run<N>/{multisine,chirp}.mcap
+results/<model>/run<N>/{results.json, report.html, fit_*.png}
+```
+
 `collect.py` runs the actuator in MIT mode with kp=kd=0, so the firmware
 emits a pure feed-forward torque -- the same signal that becomes the
-MuJoCo `<motor>` actuator's `ctrl` during optimization.
+MuJoCo `<motor>` actuator's `ctrl` during optimization. Each invocation
+picks the next free `run<N>` slot under `data/<model>/`:
 
 ```bash
-uv run scripts/collect.py --channel can0 --id 1 -o data/rs-02/sample1_run1
+uv run scripts/collect.py --channel can0 --id 1 --model rs-02
+# -> data/rs-02/run1/   (or run2, run3, ... if earlier runs exist)
+```
 
-uv run scripts/optimize.py \
-  --recordings data/rs-02/sample1_run1/ \
-  --out-dir results/rs-02/sample1_run1/
+`optimize.py --model rs-02` iterates *every* `data/rs-02/run<N>/` and
+writes the corresponding `results/rs-02/run<N>/`:
 
-uv run scripts/visualize.py \
-  --recordings data/rs-02/sample1_run1/ \
-  --out-dir results/rs-02/sample1_run1/
+```bash
+uv run scripts/optimize.py --model rs-02
+uv run scripts/visualize.py --model rs-02
 ```
 
 `optimize.py` writes `results.json` (params + initial values) and
 `report.html` (MuJoCo's interactive sysid report with confidence
-intervals). Useful flags:
+intervals) per run. Useful flags:
 - `--no-frictionloss` — freeze frictionloss at the initial value
 - `--no-velocity-sensor` — fit position only (firmware velocity is
   differentiated and can have phase delay)

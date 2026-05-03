@@ -217,6 +217,45 @@ def load_sequence(path: Path | str) -> Sequence:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Run-directory layout: data/<model>/run<N>/  (and results/<model>/run<N>/)   #
+# --------------------------------------------------------------------------- #
+
+def next_run_dir(base: Path | str) -> Path:
+    """Return ``base/run<N>`` with N = (max existing run number) + 1.
+
+    Used by `collect.py` to write each new session into a fresh subdir.
+    """
+    base = Path(base)
+    n = 1
+    if base.exists():
+        nums = [
+            int(p.name[3:]) for p in base.iterdir()
+            if p.is_dir() and p.name.startswith("run") and p.name[3:].isdigit()
+        ]
+        if nums:
+            n = max(nums) + 1
+    return base / f"run{n}"
+
+
+def list_run_dirs(base: Path | str) -> list[Path]:
+    """Return every ``base/run<N>`` directory, sorted numerically by N.
+
+    Used by `optimize.py` and `visualize.py` to iterate every captured run
+    for a given actuator class.
+    """
+    base = Path(base)
+    if not base.is_dir():
+        raise SystemExit(f"{base} does not exist")
+    runs = []
+    for p in base.iterdir():
+        if p.is_dir() and p.name.startswith("run") and p.name[3:].isdigit():
+            runs.append((int(p.name[3:]), p))
+    if not runs:
+        raise SystemExit(f"no run<N> directories found in {base}")
+    return [p for _, p in sorted(runs)]
+
+
 def resample(seq: Sequence, dt: float) -> Sequence:
     """Resample onto a uniform t = k*dt grid spanning the recording.
 

@@ -5,12 +5,14 @@ The actuator is run in MIT mode with kp=kd=0, so the firmware applies
 exactly the torque we send -- the same signal that becomes the MuJoCo
 `<motor>` actuator's `ctrl` during optimization.
 
-Each invocation runs two excitations back-to-back:
-  * multisine at `--amplitude` -> `<out-dir>/multisine.mcap`
-  * linear chirp at `--amplitude` -> `<out-dir>/chirp.mcap`
+Each invocation runs two excitations back-to-back, writing into
+``data/<model>/run<N>/`` where ``N`` auto-increments past any existing
+runs for that actuator class:
+  * multisine at `--amplitude` -> `data/<model>/run<N>/multisine.mcap`
+  * linear chirp at `--amplitude` -> `data/<model>/run<N>/chirp.mcap`
 
 Usage:
-    python scripts/collect.py --channel can0 --id 1 -o data/run1
+    python scripts/collect.py --channel can0 --id 1 --model rs-02
 """
 
 
@@ -21,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from recording import write_mcap
+from recording import next_run_dir, write_mcap
 from signals import make_chirp, make_multisine
 from streaming import (
     close_bus, open_bus, stream, wait_for_first_state,
@@ -98,8 +100,8 @@ def main() -> None:
         help="seconds to coast at zero torque between excitations",
     )
     parser.add_argument(
-        "--out-dir", "-o", type=Path, default=Path("data/recording"),
-        help="directory to write multisine.mcap and chirp.mcap",
+        "--data-root", type=Path, default=Path("data"),
+        help="root for data/<model>/run<N>/ output",
     )
     args = parser.parse_args()
 
@@ -109,7 +111,10 @@ def main() -> None:
     )
     _, tau_chirp = make_chirp(args.duration, args.rate, args.amplitude)
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = next_run_dir(args.data_root / args.model)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Recording into {out_dir}/")
+
     common_metadata = {
         "sampling_rate": float(args.rate),
         "actuator_id": int(args.id),
@@ -120,13 +125,13 @@ def main() -> None:
     try:
         _record(
             bus, "multisine", tau_multi, args.rate, args.amplitude,
-            args.out_dir / "multisine.mcap", common_metadata,
+            out_dir / "multisine.mcap", common_metadata,
         )
         print(f"\nresting {args.rest:.1f}s at zero torque...")
         time.sleep(args.rest)
         _record(
             bus, "chirp", tau_chirp, args.rate, args.amplitude,
-            args.out_dir / "chirp.mcap", common_metadata,
+            out_dir / "chirp.mcap", common_metadata,
         )
     finally:
         close_bus(bus)

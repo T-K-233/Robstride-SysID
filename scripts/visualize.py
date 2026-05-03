@@ -10,10 +10,14 @@ and initial parameters, then for every `*.mcap` in `recordings`:
 
 A summary table at the end aggregates the per-recording RMSEs.
 
+Two modes (matching `optimize.py`):
+  * ``--model rs-02`` iterates every ``data/rs-02/run<N>/`` and writes
+    ``results/rs-02/run<N>/fit_<stem>.png``.
+  * ``--recordings DIR --out-dir DIR`` runs once on a single explicit pair;
+    used by the sim test pipeline.
+
 Usage:
-    python scripts/visualize.py \
-        --recordings data/rs-02/run1/ \
-        --out-dir results/rs-02/run1/
+    python scripts/visualize.py --model rs-02
 """
 
 
@@ -28,7 +32,7 @@ import mujoco.rollout as rollout
 import numpy as np
 
 from model import JOINT_NAME, make_spec
-from recording import Sequence, load_sequence, resample
+from recording import Sequence, list_run_dirs, load_sequence, resample
 
 
 def simulate(
@@ -132,26 +136,15 @@ def plot_fit(
     return rmse
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--recordings", type=Path, required=True,
-        help="Directory of *.mcap recordings (matches optimize.py).",
-    )
-    parser.add_argument(
-        "--out-dir", type=Path, required=True,
-        help="Directory containing results.json from optimize.py; "
-             "fit_<stem>.png images are written here too.",
-    )
-    args = parser.parse_args()
-
-    if not args.recordings.is_dir():
-        raise SystemExit(f"--recordings must be a directory, got {args.recordings}")
-    paths = sorted(args.recordings.glob("*.mcap"))
+def visualize_run(recordings_dir: Path, out_dir: Path) -> None:
+    """Plot every *.mcap in `recordings_dir` against `out_dir/results.json`."""
+    if not recordings_dir.is_dir():
+        raise SystemExit(f"{recordings_dir} is not a directory")
+    paths = sorted(recordings_dir.glob("*.mcap"))
     if not paths:
-        raise SystemExit(f"No *.mcap files found in {args.recordings}")
+        raise SystemExit(f"no *.mcap files in {recordings_dir}")
 
-    results_json = args.out_dir / "results.json"
+    results_json = out_dir / "results.json"
     if not results_json.exists():
         raise SystemExit(
             f"{results_json} not found; run scripts/optimize.py first."
@@ -159,9 +152,9 @@ def main() -> None:
     params = json.loads(results_json.read_text())
     init = params["initial"]
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Plotting {len(paths)} recording(s) -> {args.out_dir}/")
+    print(f"Plotting {len(paths)} recording(s) -> {out_dir}/")
     print(
         f"Identified params: armature={params['armature']:.6f}  "
         f"damping={params['damping']:.6f}  "
@@ -188,7 +181,7 @@ def main() -> None:
             qpos0=seq.position[0], qvel0=seq.velocity[0],
         )
         rmse = plot_fit(
-            args.out_dir / f"fit_{p.stem}.png",
+            out_dir / f"fit_{p.stem}.png",
             seq, params,
             pos_init, vel_init, pos_opt, vel_opt,
         )
@@ -198,8 +191,50 @@ def main() -> None:
             f"{rmse['vel_init']:>9.4f}  {rmse['vel_opt']:>9.4f}"
         )
 
-    print()
-    print(f"Wrote {len(paths)} fit plots to {args.out_dir}/")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model",
+        help="Iterate every data/<model>/run<N>/ and write plots to "
+             "results/<model>/run<N>/. Mutually exclusive with --recordings.",
+    )
+    parser.add_argument(
+        "--data-root", type=Path, default=Path("data"),
+        help="Root for data/<model>/ when --model is used.",
+    )
+    parser.add_argument(
+        "--results-root", type=Path, default=Path("results"),
+        help="Root for results/<model>/ when --model is used.",
+    )
+    parser.add_argument(
+        "--recordings", type=Path,
+        help="Single run directory (overrides --model). Used by the sim test.",
+    )
+    parser.add_argument(
+        "--out-dir", type=Path,
+        help="Single output directory; required with --recordings.",
+    )
+    args = parser.parse_args()
+
+    if args.recordings is not None:
+        if args.model is not None:
+            raise SystemExit("--model and --recordings are mutually exclusive")
+        if args.out_dir is None:
+            raise SystemExit("--out-dir is required when --recordings is set")
+        pairs = [(args.recordings, args.out_dir)]
+    elif args.model is not None:
+        run_dirs = list_run_dirs(args.data_root / args.model)
+        pairs = [
+            (d, args.results_root / args.model / d.name) for d in run_dirs
+        ]
+    else:
+        raise SystemExit("must specify --model or --recordings")
+
+    for i, (rec_dir, out_dir) in enumerate(pairs, start=1):
+        if len(pairs) > 1:
+            print(f"\n========== run {i}/{len(pairs)}: {rec_dir.name} ==========")
+        visualize_run(rec_dir, out_dir)
 
 
 if __name__ == "__main__":

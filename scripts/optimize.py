@@ -6,15 +6,16 @@ an independent sequence in a single MuJoCo `ModelSequences` -- the standard
 way to combine experiments for better identifiability (see the mujoco.sysid
 notebook). Outputs go into the parallel results directory.
 
-Usage:
-    python scripts/optimize.py \
-        --recordings data/rs-02/run1/ \
-        --out-dir results/rs-02/run1/
+Two modes:
+  * ``--model rs-02`` iterates every ``data/rs-02/run<N>/`` and writes
+    ``results/rs-02/run<N>/{results.json, report.html}``.
+  * ``--recordings DIR --out-dir DIR`` runs once on a single explicit pair;
+    used by the sim test pipeline.
 
-Convention (mirroring /home/tk/Desktop/Robstride-SysID):
-    data/<class>/<run>/<signal>.mcap   recordings produced by collect.py
-    results/<class>/<run>/results.json fitted params
-    results/<class>/<run>/report.html  mujoco.sysid HTML report
+Layout:
+    data/<model>/run<N>/<signal>.mcap     recordings from collect.py
+    results/<model>/run<N>/results.json   fitted params
+    results/<model>/run<N>/report.html    mujoco.sysid HTML report
 """
 
 
@@ -29,7 +30,7 @@ import numpy as np
 from mujoco import sysid
 
 from model import JOINT_NAME, make_spec
-from recording import Sequence, load_sequence, resample
+from recording import Sequence, list_run_dirs, load_sequence, resample
 
 
 # --------------------------------------------------------------------------- #
@@ -130,42 +131,20 @@ def discover_recordings(recordings_dir: Path) -> list[Path]:
     return paths
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--recordings", type=Path, required=True,
-        help="Directory containing *.mcap files from collect.py. Every MCAP "
-             "in the directory becomes a separate sequence in the fit.",
-    )
-    parser.add_argument(
-        "--out-dir", type=Path, required=True,
-        help="Directory to write results.json and report.html.",
-    )
-    parser.add_argument(
-        "--init-armature", type=float, default=1e-3,
-    )
-    parser.add_argument(
-        "--init-damping", type=float, default=0.05,
-    )
-    parser.add_argument(
-        "--init-frictionloss", type=float, default=0.1,
-    )
-    parser.add_argument(
-        "--no-frictionloss", action="store_true",
-        help="Freeze frictionloss at the initial value (helpful when you only "
-             "want to identify armature + damping for a smooth-bearing case).",
-    )
-    parser.add_argument(
-        "--no-velocity-sensor", action="store_true",
-        help="Drop the jointvel sensor; identify from position only.",
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-    )
-    args = parser.parse_args()
-
-    paths = discover_recordings(args.recordings)
-    print(f"Found {len(paths)} recording(s) in {args.recordings}:")
+def optimize_run(
+    recordings_dir: Path,
+    out_dir: Path,
+    *,
+    init_armature: float,
+    init_damping: float,
+    init_frictionloss: float,
+    no_frictionloss: bool,
+    no_velocity_sensor: bool,
+    verbose: bool,
+) -> None:
+    """Run mujoco.sysid on every *.mcap in `recordings_dir`, write to `out_dir`."""
+    paths = discover_recordings(recordings_dir)
+    print(f"Found {len(paths)} recording(s) in {recordings_dir}:")
     raw_seqs = []
     for p in paths:
         s = load_sequence(p)
@@ -189,7 +168,7 @@ def main() -> None:
     seqs = [resample(s, dt) for s in raw_seqs]
 
     spec = make_spec(dt)
-    if args.no_velocity_sensor:
+    if no_velocity_sensor:
         spec.delete(spec.sensor("velocity"))
     model = spec.compile()
 
@@ -201,7 +180,7 @@ def main() -> None:
         sensor_tss.append(y_ts)
 
     ms = sysid.ModelSequences(
-        "rs02",
+        "actuator",
         spec,
         [s.name for s in seqs],
         init_states,
@@ -209,10 +188,8 @@ def main() -> None:
         sensor_tss,
     )
 
-    params = build_initial_params(
-        args.init_armature, args.init_damping, args.init_frictionloss,
-    )
-    if args.no_frictionloss:
+    params = build_initial_params(init_armature, init_damping, init_frictionloss)
+    if no_frictionloss:
         params["frictionloss"].frozen = True
 
     residual_fn = sysid.build_residual_fn(models_sequences=[ms])
@@ -222,7 +199,7 @@ def main() -> None:
         initial_params=params,
         residual_fn=residual_fn,
         optimizer="mujoco",
-        verbose=args.verbose,
+        verbose=verbose,
     )
 
     summary = {
@@ -234,8 +211,8 @@ def main() -> None:
         frozen = " (frozen)" if params[k].frozen else ""
         print(f"  {k:>14s} = {v:.6f}{frozen}")
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    results_json = args.out_dir / "results.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_json = out_dir / "results.json"
     with results_json.open("w") as f:
         json.dump(
             {
@@ -243,17 +220,17 @@ def main() -> None:
                 "damping": summary["damping"],
                 "frictionloss": summary["frictionloss"],
                 "initial": {
-                    "armature": args.init_armature,
-                    "damping": args.init_damping,
-                    "frictionloss": args.init_frictionloss,
+                    "armature": init_armature,
+                    "damping": init_damping,
+                    "frictionloss": init_frictionloss,
                 },
                 "frozen": {
                     "armature": False,
                     "damping": False,
-                    "frictionloss": bool(args.no_frictionloss),
+                    "frictionloss": bool(no_frictionloss),
                 },
                 "recordings": [p.name for p in paths],
-                "recordings_dir": str(args.recordings),
+                "recordings_dir": str(recordings_dir),
                 "sampling_rate": sampling_rate,
             },
             f,
@@ -265,17 +242,83 @@ def main() -> None:
     report = sysid.default_report(
         models_sequences=[ms],
         initial_params=build_initial_params(
-            args.init_armature, args.init_damping, args.init_frictionloss,
+            init_armature, init_damping, init_frictionloss,
         ),
         opt_params=opt_params,
         residual_fn=residual_fn,
         opt_result=opt_result,
-        title="RS02 actuator system identification",
+        title=f"Actuator sysid: {recordings_dir.name}",
         generate_videos=False,
     )
-    report_html = args.out_dir / "report.html"
+    report_html = out_dir / "report.html"
     report_html.write_text(report.build())
     print(f"Wrote report to {report_html}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    # Two modes: per-model iteration, or explicit single-run dirs.
+    parser.add_argument(
+        "--model",
+        help="Iterate every data/<model>/run<N>/ and write to "
+             "results/<model>/run<N>/. Mutually exclusive with --recordings.",
+    )
+    parser.add_argument(
+        "--data-root", type=Path, default=Path("data"),
+        help="Root for data/<model>/ when --model is used.",
+    )
+    parser.add_argument(
+        "--results-root", type=Path, default=Path("results"),
+        help="Root for results/<model>/ when --model is used.",
+    )
+    parser.add_argument(
+        "--recordings", type=Path,
+        help="Single run directory (overrides --model). Used by the sim test.",
+    )
+    parser.add_argument(
+        "--out-dir", type=Path,
+        help="Single output directory; required with --recordings.",
+    )
+    parser.add_argument("--init-armature", type=float, default=1e-3)
+    parser.add_argument("--init-damping", type=float, default=0.05)
+    parser.add_argument("--init-frictionloss", type=float, default=0.1)
+    parser.add_argument(
+        "--no-frictionloss", action="store_true",
+        help="Freeze frictionloss at the initial value.",
+    )
+    parser.add_argument(
+        "--no-velocity-sensor", action="store_true",
+        help="Drop the jointvel sensor; identify from position only.",
+    )
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    if args.recordings is not None:
+        if args.model is not None:
+            raise SystemExit("--model and --recordings are mutually exclusive")
+        if args.out_dir is None:
+            raise SystemExit("--out-dir is required when --recordings is set")
+        pairs = [(args.recordings, args.out_dir)]
+    elif args.model is not None:
+        run_dirs = list_run_dirs(args.data_root / args.model)
+        pairs = [
+            (d, args.results_root / args.model / d.name) for d in run_dirs
+        ]
+    else:
+        raise SystemExit("must specify --model or --recordings")
+
+    for i, (rec_dir, out_dir) in enumerate(pairs, start=1):
+        if len(pairs) > 1:
+            print(f"\n========== run {i}/{len(pairs)}: {rec_dir.name} ==========")
+        optimize_run(
+            rec_dir, out_dir,
+            init_armature=args.init_armature,
+            init_damping=args.init_damping,
+            init_frictionloss=args.init_frictionloss,
+            no_frictionloss=args.no_frictionloss,
+            no_velocity_sensor=args.no_velocity_sensor,
+            verbose=args.verbose,
+        )
 
 
 if __name__ == "__main__":
