@@ -18,7 +18,7 @@ Usage:
         --rel-tol 0.30
 """
 
-from __future__ import annotations
+
 
 import argparse
 import json

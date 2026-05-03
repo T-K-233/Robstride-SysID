@@ -17,11 +17,10 @@ Convention (mirroring /home/tk/Desktop/Robstride-SysID):
     results/<class>/<run>/report.html  mujoco.sysid HTML report
 """
 
-from __future__ import annotations
+
 
 import argparse
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
@@ -30,63 +29,7 @@ import numpy as np
 from mujoco import sysid
 
 from model import JOINT_NAME, make_spec
-from recording import read_mcap
-
-
-# --------------------------------------------------------------------------- #
-# Data loading                                                                #
-# --------------------------------------------------------------------------- #
-
-@dataclass
-class Sequence:
-    name: str
-    times: np.ndarray            # (N,) seconds, ~uniform, rebased to t=0
-    ctrl_torque: np.ndarray      # (N,) N.m -- input to motor actuator
-    position: np.ndarray         # (N,) rad, output side
-    velocity: np.ndarray         # (N,) rad/s, output side
-    sampling_rate: float         # Hz
-
-
-def load_sequence(path: Path) -> Sequence:
-    """Load an MCAP recording. The sampling rate is derived from the actual
-    timestamps -- the metadata's `sampling_rate` is only the *target* rate,
-    and Python loop jitter typically makes the actual rate 1-5% slower.
-    Using the empirical rate eliminates that bias in the simulation."""
-    rec = read_mcap(path)
-    if len(rec.times) < 2:
-        raise ValueError(f"{path}: need >= 2 samples")
-    declared = float(rec.metadata.get("sampling_rate", 0.0))
-    empirical = 1.0 / float(np.median(np.diff(rec.times)))
-    if declared > 0.0 and abs(empirical - declared) / declared > 0.005:
-        print(
-            f"  {path.name}: empirical rate {empirical:.2f} Hz "
-            f"(declared {declared:.1f} Hz, "
-            f"mismatch {(empirical - declared) / declared:+.1%})"
-        )
-    return Sequence(
-        name=path.stem,
-        times=rec.times.astype(np.float64),
-        ctrl_torque=rec.ctrl_torque.astype(np.float64),
-        position=rec.position.astype(np.float64),
-        velocity=rec.velocity.astype(np.float64),
-        sampling_rate=empirical,
-    )
-
-
-def to_uniform_grid(seq: Sequence, dt: float) -> Sequence:
-    """Resample onto a uniform t = k*dt grid spanning the recording."""
-    t0 = float(seq.times[0])
-    t_end = float(seq.times[-1])
-    n = int(np.floor((t_end - t0) / dt)) + 1
-    t_uniform = t0 + dt * np.arange(n)
-    return Sequence(
-        name=seq.name,
-        times=t_uniform - t0,                     # rebase to start at 0
-        ctrl_torque=np.interp(t_uniform, seq.times, seq.ctrl_torque),
-        position=np.interp(t_uniform, seq.times, seq.position),
-        velocity=np.interp(t_uniform, seq.times, seq.velocity),
-        sampling_rate=1.0 / dt,
-    )
+from recording import Sequence, load_sequence, resample
 
 
 # --------------------------------------------------------------------------- #
@@ -223,10 +166,11 @@ def main() -> None:
 
     paths = discover_recordings(args.recordings)
     print(f"Found {len(paths)} recording(s) in {args.recordings}:")
+    raw_seqs = []
     for p in paths:
-        print(f"  {p.name}")
-
-    raw_seqs = [load_sequence(p) for p in paths]
+        s = load_sequence(p)
+        print(f"  {s.name}.mcap  rate={s.sampling_rate:.2f} Hz")
+        raw_seqs.append(s)
 
     # Use the median empirical rate across recordings as the common simulation
     # timestep; reject only if any recording diverges by more than 5% from it
@@ -242,7 +186,7 @@ def main() -> None:
                 "Re-record at a consistent rate."
             )
     print(f"Simulation timestep: dt = {dt*1000:.3f} ms ({sampling_rate:.2f} Hz)")
-    seqs = [to_uniform_grid(s, dt) for s in raw_seqs]
+    seqs = [resample(s, dt) for s in raw_seqs]
 
     spec = make_spec(dt)
     if args.no_velocity_sensor:

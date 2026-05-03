@@ -6,7 +6,7 @@ Reads `out-dir/results.json` (produced by `optimize.py`) for the identified
 and initial parameters, then for every `*.mcap` in `recordings`:
   * forward-rolls MuJoCo with both parameter sets
   * overlays measured / initial / identified position and velocity, plus the
-    feed-forward torque, and writes `out-dir/fit_<stem>.png`
+    feed-forward (or PD-equivalent) torque, and writes `out-dir/fit_<stem>.png`
 
 A summary table at the end aggregates the per-recording RMSEs.
 
@@ -16,7 +16,7 @@ Usage:
         --out-dir results/rs-02/run1/
 """
 
-from __future__ import annotations
+
 
 import argparse
 import json
@@ -28,35 +28,7 @@ import mujoco.rollout as rollout
 import numpy as np
 
 from model import JOINT_NAME, make_spec
-from recording import read_mcap
-
-
-def load_recording(path: Path) -> dict:
-    """Load an MCAP and derive its empirical sampling rate from timestamps,
-    matching the convention in optimize.py."""
-    rec = read_mcap(path)
-    if len(rec.times) < 2:
-        raise ValueError(f"{path}: need >= 2 samples")
-    sampling_rate = 1.0 / float(np.median(np.diff(rec.times)))
-    return {
-        "times": rec.times,
-        "ctrl_torque": rec.ctrl_torque,
-        "position": rec.position,
-        "velocity": rec.velocity,
-        "sampling_rate": sampling_rate,
-        "metadata": rec.metadata,
-    }
-
-
-def to_uniform(times, *signals, dt):
-    """Resample irregularly-sampled signals onto t = k*dt grid."""
-    t0 = float(times[0])
-    n = int(np.floor((times[-1] - t0) / dt)) + 1
-    t_new = t0 + dt * np.arange(n)
-    out = [t_new - t0]
-    for s in signals:
-        out.append(np.interp(t_new, times, s))
-    return out
+from recording import Sequence, load_sequence, resample
 
 
 def simulate(
@@ -87,56 +59,57 @@ def simulate(
         (1, mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS.value))
     )
     mujoco.mj_getState(
-        model, data, initial_state[0], mujoco.mjtState.mjSTATE_FULLPHYSICS.value,
+        model, data, initial_state[0],
+        mujoco.mjtState.mjSTATE_FULLPHYSICS.value,
     )
 
-    state, sensor = rollout.rollout(
+    _, sensor = rollout.rollout(
         model, data, initial_state, ctrl[:-1].reshape(1, n - 1, nu),
     )
     sensor = np.squeeze(sensor, axis=0)
     return sensor[:, 0], sensor[:, 1]
 
 
-def plot_one(
+def plot_fit(
     out_path: Path,
-    label: str,
+    seq: Sequence,
     params: dict,
-    times: np.ndarray,
-    ctrl: np.ndarray,
-    pos_meas: np.ndarray,
-    vel_meas: np.ndarray,
     pos_init: np.ndarray,
     vel_init: np.ndarray,
     pos_opt: np.ndarray,
     vel_opt: np.ndarray,
 ) -> dict:
-    """Render the 3-pane plot for a single sequence and return its RMSEs."""
-    n = min(len(times), len(pos_init), len(pos_opt))
-    times = times[:n]; ctrl = ctrl[:n]
-    pos_meas = pos_meas[:n]; vel_meas = vel_meas[:n]
+    """Render the 3-pane plot for one sequence; return its RMSEs."""
+    n = min(len(seq.times), len(pos_init), len(pos_opt))
+    times = seq.times[:n]
+    ctrl = seq.ctrl_torque[:n]
+    pos_meas = seq.position[:n]
+    vel_meas = seq.velocity[:n]
     pos_init = pos_init[:n]; vel_init = vel_init[:n]
     pos_opt = pos_opt[:n]; vel_opt = vel_opt[:n]
 
-    rmse_pos_init = float(np.sqrt(np.mean((pos_init - pos_meas) ** 2)))
-    rmse_pos_opt = float(np.sqrt(np.mean((pos_opt - pos_meas) ** 2)))
-    rmse_vel_init = float(np.sqrt(np.mean((vel_init - vel_meas) ** 2)))
-    rmse_vel_opt = float(np.sqrt(np.mean((vel_opt - vel_meas) ** 2)))
+    rmse = {
+        "pos_init": float(np.sqrt(np.mean((pos_init - pos_meas) ** 2))),
+        "pos_opt": float(np.sqrt(np.mean((pos_opt - pos_meas) ** 2))),
+        "vel_init": float(np.sqrt(np.mean((vel_init - vel_meas) ** 2))),
+        "vel_opt": float(np.sqrt(np.mean((vel_opt - vel_meas) ** 2))),
+    }
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     axes[0].plot(times, pos_meas, color="0.2", lw=1.2, label="measured")
     axes[0].plot(times, pos_init, color="C3", lw=1.0, alpha=0.8,
-                 label=f"initial (RMSE {rmse_pos_init:.3f})")
+                 label=f"initial (RMSE {rmse['pos_init']:.3f})")
     axes[0].plot(times, pos_opt, color="C0", lw=1.0,
-                 label=f"identified (RMSE {rmse_pos_opt:.3f})")
+                 label=f"identified (RMSE {rmse['pos_opt']:.3f})")
     axes[0].set_ylabel("position (rad)")
     axes[0].legend(loc="best", fontsize=9)
     axes[0].grid(alpha=0.3)
 
     axes[1].plot(times, vel_meas, color="0.2", lw=1.2, label="measured")
     axes[1].plot(times, vel_init, color="C3", lw=1.0, alpha=0.8,
-                 label=f"initial (RMSE {rmse_vel_init:.3f})")
+                 label=f"initial (RMSE {rmse['vel_init']:.3f})")
     axes[1].plot(times, vel_opt, color="C0", lw=1.0,
-                 label=f"identified (RMSE {rmse_vel_opt:.3f})")
+                 label=f"identified (RMSE {rmse['vel_opt']:.3f})")
     axes[1].set_ylabel("velocity (rad/s)")
     axes[1].legend(loc="best", fontsize=9)
     axes[1].grid(alpha=0.3)
@@ -147,7 +120,8 @@ def plot_one(
     axes[2].grid(alpha=0.3)
 
     fig.suptitle(
-        f"{label}: armature={params['armature']:.4g}, "
+        f"{seq.name}: "
+        f"armature={params['armature']:.4g}, "
         f"damping={params['damping']:.4g}, "
         f"frictionloss={params['frictionloss']:.4g}",
         fontsize=11,
@@ -155,10 +129,7 @@ def plot_one(
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    return {
-        "pos_init": rmse_pos_init, "pos_opt": rmse_pos_opt,
-        "vel_init": rmse_vel_init, "vel_opt": rmse_vel_opt,
-    }
+    return rmse
 
 
 def main() -> None:
@@ -197,34 +168,34 @@ def main() -> None:
         f"frictionloss={params['frictionloss']:.6f}"
     )
     print()
-    print(f"{'recording':>20s}  {'pos init':>10s}  {'pos opt':>10s}  "
-          f"{'vel init':>10s}  {'vel opt':>10s}")
+    print(f"{'recording':>20s}  "
+          f"{'pos init':>9s}  {'pos opt':>9s}  "
+          f"{'vel init':>9s}  {'vel opt':>9s}")
     print("-" * 72)
 
     for p in paths:
-        rec = load_recording(p)
-        dt = 1.0 / rec["sampling_rate"]
-        times, ctrl, pos_meas, vel_meas = to_uniform(
-            rec["times"], rec["ctrl_torque"], rec["position"], rec["velocity"],
-            dt=dt,
-        )
+        raw = load_sequence(p)
+        seq = resample(raw, 1.0 / raw.sampling_rate)
+        dt = 1.0 / seq.sampling_rate
         pos_init, vel_init = simulate(
             init["armature"], init["damping"], init["frictionloss"],
-            dt, ctrl, qpos0=pos_meas[0], qvel0=vel_meas[0],
+            dt, seq.ctrl_torque,
+            qpos0=seq.position[0], qvel0=seq.velocity[0],
         )
         pos_opt, vel_opt = simulate(
             params["armature"], params["damping"], params["frictionloss"],
-            dt, ctrl, qpos0=pos_meas[0], qvel0=vel_meas[0],
+            dt, seq.ctrl_torque,
+            qpos0=seq.position[0], qvel0=seq.velocity[0],
         )
-        out_png = args.out_dir / f"fit_{p.stem}.png"
-        rmses = plot_one(
-            out_png, p.stem, params, times, ctrl,
-            pos_meas, vel_meas, pos_init, vel_init, pos_opt, vel_opt,
+        rmse = plot_fit(
+            args.out_dir / f"fit_{p.stem}.png",
+            seq, params,
+            pos_init, vel_init, pos_opt, vel_opt,
         )
         print(
-            f"{p.stem:>20s}  {rmses['pos_init']:>10.4f}  "
-            f"{rmses['pos_opt']:>10.4f}  {rmses['vel_init']:>10.4f}  "
-            f"{rmses['vel_opt']:>10.4f}"
+            f"{seq.name:>20s}  "
+            f"{rmse['pos_init']:>9.4f}  {rmse['pos_opt']:>9.4f}  "
+            f"{rmse['vel_init']:>9.4f}  {rmse['vel_opt']:>9.4f}"
         )
 
     print()

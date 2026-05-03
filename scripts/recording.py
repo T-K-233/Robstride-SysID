@@ -1,18 +1,23 @@
-"""I/O helpers for actuator recordings stored as MCAP files.
+"""I/O for actuator recordings stored as MCAP files.
 
 Layout:
-  * one topic, ``/actuator/state``, with a JSON-schema message per timestep:
+  * one topic ``/actuator/state``, JSON-schema message per timestep:
     ``{ctrl_torque, position, velocity, measured_torque}``
   * MCAP message ``log_time`` is nanoseconds since the start of the recording
     (relative timeline; not unix wall-clock)
-  * a single ``recording`` metadata record holds the run-level metadata
-    (sampling rate, signal type, actuator ID, sim ground-truth, ...) -- MCAP
-    metadata stores ``str -> str``, so values are JSON-encoded then decoded.
+  * a ``recording`` metadata record holds run-level fields (sampling rate,
+    signal type, actuator ID, sim ground-truth, ...). MCAP metadata stores
+    ``str -> str``, so values are JSON-encoded then decoded.
 
 The MCAP files open cleanly in Foxglove and ROS 2 tooling.
-"""
 
-from __future__ import annotations
+Three layers of abstraction, increasing distance from disk:
+  * ``Recording`` -- raw MCAP contents, irregular sample times.
+  * ``Sequence``  -- ``Recording`` plus the empirical sampling rate;
+    still irregular times.
+  * ``resample(seq, dt)`` -- ``Sequence`` on a uniform t = k*dt grid, ready
+    for the optimizer.
+"""
 
 import json
 from dataclasses import dataclass, field
@@ -38,11 +43,15 @@ SCHEMA: dict[str, Any] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Raw MCAP <-> dataclass                                                      #
+# --------------------------------------------------------------------------- #
+
 @dataclass
 class Recording:
-    """One actuator-state recording, fully loaded into memory."""
+    """One actuator-state recording exactly as it lives on disk."""
     times: np.ndarray              # (N,) seconds since recording start
-    ctrl_torque: np.ndarray        # (N,) N.m
+    ctrl_torque: np.ndarray        # (N,) N.m -- feed-forward torque command
     position: np.ndarray           # (N,) rad, output side, zeroed at t=0
     velocity: np.ndarray           # (N,) rad/s
     measured_torque: np.ndarray    # (N,) N.m
@@ -51,10 +60,6 @@ class Recording:
     def __len__(self) -> int:
         return int(self.times.shape[0])
 
-
-# --------------------------------------------------------------------------- #
-# metadata helpers (MCAP metadata stores str->str, so we JSON-encode values)  #
-# --------------------------------------------------------------------------- #
 
 def _to_str_dict(d: dict[str, Any]) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -74,10 +79,6 @@ def _from_str_dict(d: dict[str, str]) -> dict[str, Any]:
             out[k] = v
     return out
 
-
-# --------------------------------------------------------------------------- #
-# write / read                                                                #
-# --------------------------------------------------------------------------- #
 
 def write_mcap(
     path: Path | str,
@@ -107,15 +108,12 @@ def write_mcap(
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    times = np.asarray(times, dtype=np.float64)
-    ctrl_torque = np.asarray(ctrl_torque, dtype=np.float64)
-    position = np.asarray(position, dtype=np.float64)
-    velocity = np.asarray(velocity, dtype=np.float64)
-    measured_torque = np.asarray(measured_torque, dtype=np.float64)
+    times_arr = np.asarray(times, dtype=np.float64)
+    arrays = {k: np.asarray(v, dtype=np.float64) for k, v in arrays.items()}
 
     with path.open("wb") as f:
         writer = Writer(f)
-        writer.start(profile="rs02-sysid", library="rs02-sysid")
+        writer.start(profile="robstride-sysid", library="robstride-sysid")
         schema_id = writer.register_schema(
             name="ActuatorState",
             encoding="jsonschema",
@@ -127,12 +125,9 @@ def write_mcap(
             schema_id=schema_id,
         )
         for i in range(n):
-            t_ns = int(round(float(times[i]) * 1e9))
+            t_ns = int(round(float(times_arr[i]) * 1e9))
             data = json.dumps({
-                "ctrl_torque": float(ctrl_torque[i]),
-                "position": float(position[i]),
-                "velocity": float(velocity[i]),
-                "measured_torque": float(measured_torque[i]),
+                k: float(v[i]) for k, v in arrays.items()
             }).encode()
             writer.add_message(
                 channel_id=channel_id,
@@ -178,4 +173,65 @@ def read_mcap(path: Path | str) -> Recording:
         velocity=np.asarray(vel, dtype=np.float64),
         measured_torque=np.asarray(tau, dtype=np.float64),
         metadata=metadata,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Sequence: Recording + empirical rate                                        #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Sequence:
+    """One recording prepared for the optimizer.
+
+    `times` may be either the raw irregular timestamps (from `load_sequence`)
+    or a uniform grid (from `resample`).
+    """
+    name: str
+    times: np.ndarray
+    ctrl_torque: np.ndarray
+    position: np.ndarray
+    velocity: np.ndarray
+    sampling_rate: float           # empirical, Hz
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __len__(self) -> int:
+        return int(self.times.shape[0])
+
+
+def load_sequence(path: Path | str) -> Sequence:
+    """Read an MCAP and derive its empirical sampling rate from timestamps."""
+    path = Path(path)
+    rec = read_mcap(path)
+    if len(rec.times) < 2:
+        raise ValueError(f"{path}: need >= 2 samples")
+    sampling_rate = 1.0 / float(np.median(np.diff(rec.times)))
+    return Sequence(
+        name=path.stem,
+        times=rec.times,
+        ctrl_torque=rec.ctrl_torque,
+        position=rec.position,
+        velocity=rec.velocity,
+        sampling_rate=sampling_rate,
+        metadata=rec.metadata,
+    )
+
+
+def resample(seq: Sequence, dt: float) -> Sequence:
+    """Resample onto a uniform t = k*dt grid spanning the recording.
+
+    The returned sequence is rebased to t=0 so the optimizer sees a clean
+    aligned timeline. `sampling_rate` is updated to 1/dt.
+    """
+    t0 = float(seq.times[0])
+    n = int(np.floor((seq.times[-1] - t0) / dt)) + 1
+    t_uniform = t0 + dt * np.arange(n)
+    return Sequence(
+        name=seq.name,
+        times=t_uniform - t0,
+        ctrl_torque=np.interp(t_uniform, seq.times, seq.ctrl_torque),
+        position=np.interp(t_uniform, seq.times, seq.position),
+        velocity=np.interp(t_uniform, seq.times, seq.velocity),
+        sampling_rate=1.0 / dt,
+        metadata=seq.metadata,
     )

@@ -16,6 +16,25 @@ uv sync --prerelease=allow
 sudo ip link set can0 down && sudo ip link set can0 up type can bitrate 1000000
 ```
 
+## Layout
+
+```
+scripts/
+  signals.py        excitation waveform generators (multisine, chirp)
+  streaming.py      bus open/close + the streaming-recording loop
+  recording.py      MCAP I/O + Sequence dataclass + load_sequence/resample
+  model.py          inlined MJCF + helper to build an MjSpec
+  collect.py        CLI: drive feed-forward torque, log MCAPs into a run dir
+  optimize.py       glob a run dir, run mujoco.sysid, write results dir
+  visualize.py      forward-simulate per recording, write fit_<stem>.png
+  discover.py       scan a CAN bus for Robstride device IDs
+tests/
+  sim_collect.py    twin of collect.py, MuJoCo-backed with known truth
+  check_recovery.py compare optimizer output against ground-truth metadata
+data/<class>/<run>/    per-run recordings (e.g. data/rs-02/sample1_run1/)
+results/<class>/<run>/ per-run fit outputs (results.json, report.html, fit_*.png)
+```
+
 ## Validate the pipeline (no hardware needed)
 
 `tests/sim_collect.py` drives the same MJCF with preset ground-truth
@@ -25,14 +44,26 @@ parameters and Gaussian sensor noise, producing MCAPs in the same format
 ```bash
 uv run tests/sim_collect.py -o data/sim
 uv run scripts/optimize.py --recordings data/sim/ --out-dir results/sim/
+uv run tests/check_recovery.py --recordings data/sim/ --out-dir results/sim/ --rel-tol 0.30
+uv run scripts/visualize.py --recordings data/sim/ --out-dir results/sim/
 ```
 
+`check_recovery.py` exits non-zero if any param exceeds the tolerance.
+
 ## Hardware workflow
+
+`collect.py` runs the actuator in MIT mode with kp=kd=0, so the firmware
+emits a pure feed-forward torque -- the same signal that becomes the
+MuJoCo `<motor>` actuator's `ctrl` during optimization.
 
 ```bash
 uv run scripts/collect.py --channel can0 --id 1 -o data/rs-02/sample1_run1
 
 uv run scripts/optimize.py \
+  --recordings data/rs-02/sample1_run1/ \
+  --out-dir results/rs-02/sample1_run1/
+
+uv run scripts/visualize.py \
   --recordings data/rs-02/sample1_run1/ \
   --out-dir results/rs-02/sample1_run1/
 ```

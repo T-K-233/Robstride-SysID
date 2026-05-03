@@ -4,9 +4,9 @@ Simulate the collect.py experiment using MuJoCo with known parameters.
 This validates the collect -> optimize -> visualize pipeline without hardware.
 The MuJoCo model is the same one (from `scripts/model.py`) that the optimizer
 uses, with the joint's armature/damping/frictionloss overridden to a preset
-"ground-truth" set. The same excitation generators that `collect.py` uses on
-real hardware are reused here, and the script emits the same two MCAPs
-(`multisine.mcap`, `chirp.mcap`) into `--out-dir`.
+"ground-truth" set. The same excitation generators (`scripts/signals.py`)
+that `collect.py` uses on real hardware are reused here, and the script
+emits the same two MCAPs (`multisine.mcap`, `chirp.mcap`) into `--out-dir`.
 
 Each MCAP additionally carries the ground-truth parameter values in its
 metadata so `tests/check_recovery.py` can quantify recovery error.
@@ -15,10 +15,9 @@ Usage:
     python tests/sim_collect.py --out-dir data/sim
 """
 
-from __future__ import annotations
+
 
 import argparse
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -27,10 +26,11 @@ import mujoco.rollout as rollout
 import numpy as np
 from mujoco import sysid
 
-# allow `from model import ...` and `from recording import ...`
+# allow `from model import ...` etc. when running from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from model import JOINT_NAME, make_spec  # noqa: E402
 from recording import write_mcap  # noqa: E402
+from signals import make_chirp, make_multisine  # noqa: E402
 
 
 # Default ground-truth parameters representative of an unloaded RS02.
@@ -42,19 +42,6 @@ TRUE_FRICTIONLOSS = 0.25     # N.m
 # firmware's differentiated velocity estimate.
 NOISE_POSITION_RAD = 1e-3
 NOISE_VELOCITY_RADPS = 5e-2
-
-
-def _import_collect():
-    """Load scripts/collect.py as a module so we can reuse its excitation
-    generators (make_multisine, make_chirp)."""
-    target = Path(__file__).resolve().parent.parent / "scripts" / "collect.py"
-    spec = importlib.util.spec_from_file_location("collect", target)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load {target}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["collect"] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def simulate_signal(
@@ -163,7 +150,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    collect = _import_collect()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed + 100)
 
@@ -176,7 +162,7 @@ def main() -> None:
     print()
 
     # ---- multisine ----
-    _, tau = collect.make_multisine(
+    _, tau = make_multisine(
         args.duration, args.rate, args.amplitude,
         tuple(args.freqs), args.seed,
     )
@@ -194,7 +180,7 @@ def main() -> None:
     )
 
     # ---- chirp at user amplitude ----
-    _, tau = collect.make_chirp(args.duration, args.rate, args.amplitude)
+    _, tau = make_chirp(args.duration, args.rate, args.amplitude)
     times, pos, vel = simulate_signal(
         args.rate, tau,
         args.true_armature, args.true_damping, args.true_frictionloss,
