@@ -10,7 +10,7 @@ Each invocation runs two excitations back-to-back:
   * linear chirp at `--amplitude` -> `<out-dir>/chirp.mcap`
 
 Usage:
-    python scripts/collect.py --channel can0 --id 1 -o data/run1
+    python scripts/collect_torque.py --channel can0 --id 1 -o data/run1
 """
 
 
@@ -56,11 +56,13 @@ def _record(
         out_path,
         times=result["times"],
         ctrl_torque=tau[:n],
+        position_target=np.zeros(n, dtype=np.float64),
         position=result["position"],
         velocity=result["velocity"],
         measured_torque=result["measured_torque"],
         metadata={
             **common_metadata,
+            "control_mode": "torque",
             "signal_type": label,
             "amplitude": float(amplitude),
             "aborted": bool(result["aborted"]),
@@ -98,7 +100,7 @@ def main() -> None:
         help="seconds to coast at zero torque between excitations",
     )
     parser.add_argument(
-        "--out-dir", "-o", type=Path, default=Path("data/recording"),
+        "--out-dir", "-o", type=Path, default=Path("data/recording_torque"),
         help="directory to write multisine.mcap and chirp.mcap",
     )
     args = parser.parse_args()

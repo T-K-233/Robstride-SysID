@@ -1,9 +1,9 @@
-"""Bus setup and streaming-recording loop for `collect.py`.
+"""Shared bus setup and streaming-recording loop for the collect scripts.
 
-The `command_fn` callback indirection is kept so the loop is reusable for
-future driving modes; the connect/enable lifecycle, the wait-for-first-state
-probe, the per-step state read, the fault-abort path, and the zero-on-exit
-safety move all live here.
+`collect_torque.py` and `collect_pd.py` differ only in *what* they send each
+iteration -- the connect/enable lifecycle, the wait-for-first-state probe,
+the per-step state read, the fault-abort path, and the zero-on-exit safety
+move are all identical. They live here.
 """
 
 

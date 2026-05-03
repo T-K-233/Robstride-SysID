@@ -120,7 +120,7 @@ def plot_fit(
     axes[2].grid(alpha=0.3)
 
     fig.suptitle(
-        f"{seq.name}: "
+        f"{seq.name} ({seq.control_mode}): "
         f"armature={params['armature']:.4g}, "
         f"damping={params['damping']:.4g}, "
         f"frictionloss={params['frictionloss']:.4g}",
@@ -168,10 +168,10 @@ def main() -> None:
         f"frictionloss={params['frictionloss']:.6f}"
     )
     print()
-    print(f"{'recording':>20s}  "
+    print(f"{'recording':>20s}  {'mode':>6s}  "
           f"{'pos init':>9s}  {'pos opt':>9s}  "
           f"{'vel init':>9s}  {'vel opt':>9s}")
-    print("-" * 72)
+    print("-" * 80)
 
     for p in paths:
         raw = load_sequence(p)
@@ -193,7 +193,7 @@ def main() -> None:
             pos_init, vel_init, pos_opt, vel_opt,
         )
         print(
-            f"{seq.name:>20s}  "
+            f"{seq.name:>20s}  {seq.control_mode:>6s}  "
             f"{rmse['pos_init']:>9.4f}  {rmse['pos_opt']:>9.4f}  "
             f"{rmse['vel_init']:>9.4f}  {rmse['vel_opt']:>9.4f}"
         )

@@ -2,22 +2,31 @@
 
 Layout:
   * one topic ``/actuator/state``, JSON-schema message per timestep:
-    ``{ctrl_torque, position, velocity, measured_torque}``
+    ``{ctrl_torque, position_target, position, velocity, measured_torque}``
   * MCAP message ``log_time`` is nanoseconds since the start of the recording
     (relative timeline; not unix wall-clock)
   * a ``recording`` metadata record holds run-level fields (sampling rate,
-    signal type, actuator ID, sim ground-truth, ...). MCAP metadata stores
-    ``str -> str``, so values are JSON-encoded then decoded.
+    signal type, control mode, kp/kd for PD-mode runs, sim ground-truth, ...).
+    MCAP metadata stores ``str -> str``, so values are JSON-encoded then decoded.
 
 The MCAP files open cleanly in Foxglove and ROS 2 tooling.
 
+Two recording flavors share one schema:
+  * torque (``control_mode="torque"``): ``ctrl_torque`` is what we sent via
+    MIT mode with kp=kd=0; ``position_target`` is 0.
+  * pd (``control_mode="pd"``): ``position_target`` is what we sent; the
+    firmware applied tau = kp_cmd*(p_des - p) + kd_cmd*(0 - v) + ctrl_torque,
+    with ``kp_cmd`` / ``kd_cmd`` in the recording metadata.
+
 Three layers of abstraction, increasing distance from disk:
   * ``Recording`` -- raw MCAP contents, irregular sample times.
-  * ``Sequence``  -- ``Recording`` plus the empirical sampling rate;
-    still irregular times.
+  * ``Sequence``  -- ``Recording`` plus the empirical sampling rate and the
+    *equivalent torque* (PD reconstructed via the firmware's PD law); still
+    irregular times.
   * ``resample(seq, dt)`` -- ``Sequence`` on a uniform t = k*dt grid, ready
     for the optimizer.
 """
+
 
 import json
 from dataclasses import dataclass, field
@@ -33,9 +42,13 @@ SCHEMA: dict[str, Any] = {
     "title": "ActuatorState",
     "type": "object",
     "additionalProperties": False,
-    "required": ["ctrl_torque", "position", "velocity", "measured_torque"],
+    "required": [
+        "ctrl_torque", "position_target", "position", "velocity",
+        "measured_torque",
+    ],
     "properties": {
         "ctrl_torque": {"type": "number", "description": "feed-forward torque command (N.m)"},
+        "position_target": {"type": "number", "description": "position target sent to firmware (rad); 0 in torque mode"},
         "position": {"type": "number", "description": "output-shaft position (rad)"},
         "velocity": {"type": "number", "description": "output-shaft velocity (rad/s)"},
         "measured_torque": {"type": "number", "description": "firmware-estimated output torque (N.m)"},
@@ -52,6 +65,7 @@ class Recording:
     """One actuator-state recording exactly as it lives on disk."""
     times: np.ndarray              # (N,) seconds since recording start
     ctrl_torque: np.ndarray        # (N,) N.m -- feed-forward torque command
+    position_target: np.ndarray    # (N,) rad -- position target (0 in torque mode)
     position: np.ndarray           # (N,) rad, output side, zeroed at t=0
     velocity: np.ndarray           # (N,) rad/s
     measured_torque: np.ndarray    # (N,) N.m
@@ -85,6 +99,7 @@ def write_mcap(
     *,
     times: np.ndarray,
     ctrl_torque: np.ndarray,
+    position_target: np.ndarray,
     position: np.ndarray,
     velocity: np.ndarray,
     measured_torque: np.ndarray,
@@ -96,6 +111,7 @@ def write_mcap(
     n = int(np.asarray(times).shape[0])
     arrays = {
         "ctrl_torque": ctrl_torque,
+        "position_target": position_target,
         "position": position,
         "velocity": velocity,
         "measured_torque": measured_torque,
@@ -146,6 +162,7 @@ def read_mcap(path: Path | str) -> Recording:
 
     times: list[float] = []
     cmd: list[float] = []
+    p_des: list[float] = []
     pos: list[float] = []
     vel: list[float] = []
     tau: list[float] = []
@@ -159,6 +176,7 @@ def read_mcap(path: Path | str) -> Recording:
             d = json.loads(message.data)
             times.append(message.log_time / 1e9)
             cmd.append(float(d["ctrl_torque"]))
+            p_des.append(float(d["position_target"]))
             pos.append(float(d["position"]))
             vel.append(float(d["velocity"]))
             tau.append(float(d["measured_torque"]))
@@ -169,6 +187,7 @@ def read_mcap(path: Path | str) -> Recording:
     return Recording(
         times=np.asarray(times, dtype=np.float64),
         ctrl_torque=np.asarray(cmd, dtype=np.float64),
+        position_target=np.asarray(p_des, dtype=np.float64),
         position=np.asarray(pos, dtype=np.float64),
         velocity=np.asarray(vel, dtype=np.float64),
         measured_torque=np.asarray(tau, dtype=np.float64),
@@ -177,13 +196,16 @@ def read_mcap(path: Path | str) -> Recording:
 
 
 # --------------------------------------------------------------------------- #
-# Sequence: Recording + empirical rate                                        #
+# Sequence: Recording + empirical rate + equivalent torque                    #
 # --------------------------------------------------------------------------- #
 
 @dataclass
 class Sequence:
     """One recording prepared for the optimizer.
 
+    `ctrl_torque` here is the *equivalent* torque -- the one the firmware
+    actually applied -- regardless of control mode. For torque-mode that's
+    just what we sent; for PD-mode it's reconstructed from the PD law.
     `times` may be either the raw irregular timestamps (from `load_sequence`)
     or a uniform grid (from `resample`).
     """
@@ -193,14 +215,36 @@ class Sequence:
     position: np.ndarray
     velocity: np.ndarray
     sampling_rate: float           # empirical, Hz
+    control_mode: str              # "torque" or "pd"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return int(self.times.shape[0])
 
 
+def _equivalent_torque(rec: Recording) -> np.ndarray:
+    """Reconstruct the torque the firmware applied during the recording."""
+    mode = rec.metadata.get("control_mode", "torque")
+    if mode == "torque":
+        return rec.ctrl_torque.astype(np.float64)
+    if mode == "pd":
+        try:
+            kp = float(rec.metadata["kp_cmd"])
+            kd = float(rec.metadata["kd_cmd"])
+        except KeyError as exc:
+            raise ValueError(
+                f"PD-mode recording missing {exc.args[0]!r} in metadata"
+            ) from exc
+        return (
+            kp * (rec.position_target - rec.position)
+            - kd * rec.velocity
+            + rec.ctrl_torque
+        ).astype(np.float64)
+    raise ValueError(f"unknown control_mode {mode!r}")
+
+
 def load_sequence(path: Path | str) -> Sequence:
-    """Read an MCAP and derive its empirical sampling rate from timestamps."""
+    """Read an MCAP, derive empirical rate, reconstruct equivalent torque."""
     path = Path(path)
     rec = read_mcap(path)
     if len(rec.times) < 2:
@@ -209,10 +253,11 @@ def load_sequence(path: Path | str) -> Sequence:
     return Sequence(
         name=path.stem,
         times=rec.times,
-        ctrl_torque=rec.ctrl_torque,
+        ctrl_torque=_equivalent_torque(rec),
         position=rec.position,
         velocity=rec.velocity,
         sampling_rate=sampling_rate,
+        control_mode=str(rec.metadata.get("control_mode", "torque")),
         metadata=rec.metadata,
     )
 
@@ -233,5 +278,6 @@ def resample(seq: Sequence, dt: float) -> Sequence:
         position=np.interp(t_uniform, seq.times, seq.position),
         velocity=np.interp(t_uniform, seq.times, seq.velocity),
         sampling_rate=1.0 / dt,
+        control_mode=seq.control_mode,
         metadata=seq.metadata,
     )

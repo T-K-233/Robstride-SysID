@@ -169,7 +169,10 @@ def main() -> None:
     raw_seqs = []
     for p in paths:
         s = load_sequence(p)
-        print(f"  {s.name}.mcap  rate={s.sampling_rate:.2f} Hz")
+        print(
+            f"  {s.name}.mcap  mode={s.control_mode:>6s}  "
+            f"rate={s.sampling_rate:.2f} Hz"
+        )
         raw_seqs.append(s)
 
     # Use the median empirical rate across recordings as the common simulation

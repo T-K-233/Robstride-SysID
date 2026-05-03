@@ -24,12 +24,13 @@ scripts/
   streaming.py      bus open/close + the streaming-recording loop
   recording.py      MCAP I/O + Sequence dataclass + load_sequence/resample
   model.py          inlined MJCF + helper to build an MjSpec
-  collect.py        CLI: drive feed-forward torque, log MCAPs into a run dir
+  collect_torque.py CLI: drive feed-forward torque, log MCAPs into a run dir
+  collect_pd.py     CLI: drive position targets through firmware PD, log MCAPs
   optimize.py       glob a run dir, run mujoco.sysid, write results dir
   visualize.py      forward-simulate per recording, write fit_<stem>.png
   discover.py       scan a CAN bus for Robstride device IDs
 tests/
-  sim_collect.py    twin of collect.py, MuJoCo-backed with known truth
+  sim_collect.py    twin of collect_torque.py, MuJoCo-backed with known truth
   check_recovery.py compare optimizer output against ground-truth metadata
 data/<class>/<run>/    per-run recordings (e.g. data/rs-02/sample1_run1/)
 results/<class>/<run>/ per-run fit outputs (results.json, report.html, fit_*.png)
@@ -39,7 +40,7 @@ results/<class>/<run>/ per-run fit outputs (results.json, report.html, fit_*.png
 
 `tests/sim_collect.py` drives the same MJCF with preset ground-truth
 parameters and Gaussian sensor noise, producing MCAPs in the same format
-`collect.py` would. End-to-end check:
+`collect_torque.py` would. End-to-end check:
 
 ```bash
 uv run tests/sim_collect.py -o data/sim
@@ -52,13 +53,25 @@ uv run scripts/visualize.py --recordings data/sim/ --out-dir results/sim/
 
 ## Hardware workflow
 
-`collect.py` runs the actuator in MIT mode with kp=kd=0, so the firmware
-emits a pure feed-forward torque -- the same signal that becomes the
-MuJoCo `<motor>` actuator's `ctrl` during optimization.
+There are two collection scripts. Pick one or run both into the same run dir
+-- `optimize.py` consumes whatever MCAPs it finds.
+
+**Torque mode** (kp=kd=0; firmware emits pure feed-forward torque):
 
 ```bash
-uv run scripts/collect.py --channel can0 --id 1 -o data/rs-02/sample1_run1
+uv run scripts/collect_torque.py --channel can0 --id 1 -o data/rs-02/sample1_run1
+```
 
+**PD mode** (firmware applies its built-in MIT PD law on a position target):
+
+```bash
+uv run scripts/collect_pd.py --channel can0 --id 1 -o data/rs-02/sample1_run1 \
+  --kp 10.0 --kd 0.5 --amplitude 0.5
+```
+
+Then fit and plot, regardless of which mode(s) produced the recordings:
+
+```bash
 uv run scripts/optimize.py \
   --recordings data/rs-02/sample1_run1/ \
   --out-dir results/rs-02/sample1_run1/
@@ -83,14 +96,28 @@ The collect loop typically lands at ~385 Hz rather than the requested
 400 Hz; `optimize.py` reads back the empirical rate from the timestamps
 so this jitter doesn't bias the simulation timestep.
 
+### How PD-mode fits the same model
+
+For PD-mode recordings, the firmware applies
+`τ = kp·(p_des − p) + kd·(0 − v) + τ_ff` using its own measurements.
+`load_sequence()` in `scripts/recording.py` reconstructs this torque from
+the logged `position_target`, `position`, `velocity`, `ctrl_torque` and
+the `kp_cmd`/`kd_cmd` values stored in the recording metadata, exposing
+it as the `Sequence.ctrl_torque` field. The optimizer and visualizer then
+feed that equivalent torque to the same single-`<motor>` MuJoCo model
+used for torque-mode recordings -- no separate PD actuator in the
+simulation.
+
 ## Storage format
 
 Recordings are [MCAP](https://mcap.dev) files. Each file has:
 
 * topic `/actuator/state`, JSON-schema message per timestep with
-  `ctrl_torque`, `position`, `velocity`, `measured_torque`
+  `ctrl_torque`, `position_target`, `position`, `velocity`,
+  `measured_torque`
 * a `recording` metadata record with run-level fields (`sampling_rate`,
-  `signal_type`, `actuator_id`; ground-truth fields for sim recordings)
+  `signal_type`, `control_mode`, `actuator_id`; `kp_cmd`/`kd_cmd` for
+  PD-mode recordings; ground-truth fields for sim recordings)
 
 `log_time` is nanoseconds since the start of the recording, not unix
 wall-clock.

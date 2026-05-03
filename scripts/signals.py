@@ -1,7 +1,10 @@
 """Excitation waveform generators.
 
-`collect.py` and `tests/sim_collect.py` both pull from here so simulator
-and hardware see identical excitation.
+`collect_torque.py` and `collect_pd.py` run the same multisine and chirp
+shapes; the only difference is interpretation -- in torque mode the samples
+are N.m, in PD mode they are position targets in rad. `tests/sim_collect.py`
+pulls from here so torque-mode sim and torque-mode hardware see identical
+excitation.
 """
 
 

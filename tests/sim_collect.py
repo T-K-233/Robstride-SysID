@@ -1,12 +1,13 @@
 """
-Simulate the collect.py experiment using MuJoCo with known parameters.
+Simulate the collect_torque.py experiment using MuJoCo with known parameters.
 
 This validates the collect -> optimize -> visualize pipeline without hardware.
 The MuJoCo model is the same one (from `scripts/model.py`) that the optimizer
 uses, with the joint's armature/damping/frictionloss overridden to a preset
 "ground-truth" set. The same excitation generators (`scripts/signals.py`)
-that `collect.py` uses on real hardware are reused here, and the script
-emits the same two MCAPs (`multisine.mcap`, `chirp.mcap`) into `--out-dir`.
+that `collect_torque.py` uses on real hardware are reused here, and the
+script emits the same two MCAPs (`multisine.mcap`, `chirp.mcap`) into
+`--out-dir`.
 
 Each MCAP additionally carries the ground-truth parameter values in its
 metadata so `tests/check_recovery.py` can quantify recovery error.
@@ -93,11 +94,13 @@ def write_signal(
         out_path,
         times=times,
         ctrl_torque=tau[:n],
+        position_target=np.zeros(n, dtype=np.float64),
         position=pos_meas,
         velocity=vel_meas,
         measured_torque=np.zeros(n, dtype=np.float64),
         metadata={
             "sampling_rate": float(rate),
+            "control_mode": "torque",
             "signal_type": label,
             "amplitude": float(amplitude),
             "actuator_id": 0,
