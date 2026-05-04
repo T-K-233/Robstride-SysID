@@ -9,8 +9,6 @@ the body's geometric inertia is kept tiny and fixed so all rotational inertia
 is absorbed by that one parameter.
 """
 
-
-
 import mujoco
 
 

@@ -15,8 +15,6 @@ Usage:
     python scripts/collect.py --channel can0 --id 1 --model rs-02
 """
 
-
-
 import argparse
 import time
 from pathlib import Path
