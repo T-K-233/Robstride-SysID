@@ -86,8 +86,8 @@ def main() -> None:
     )
     parser.add_argument("--rate", type=float, default=400.0, help="Hz")
     parser.add_argument(
-        "--amplitude", type=float, default=1.0,
-        help="peak torque amplitude in N.m (well below 17 N.m peak)",
+        "--amplitude", type=float, default=2.0,
+        help="peak torque amplitude in N.m",
     )
     parser.add_argument(
         "--freqs", type=float, nargs="+",
