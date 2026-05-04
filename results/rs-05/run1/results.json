@@ -1,0 +1,21 @@
+{
+  "armature": 0.0072803103162757486,
+  "damping": 0.0,
+  "frictionloss": 0.3282461980761859,
+  "initial": {
+    "armature": 0.001,
+    "damping": 0.05,
+    "frictionloss": 0.1
+  },
+  "frozen": {
+    "armature": false,
+    "damping": false,
+    "frictionloss": false
+  },
+  "recordings": [
+    "chirp.mcap",
+    "multisine.mcap"
+  ],
+  "recordings_dir": "data/rs-05/run1",
+  "sampling_rate": 384.17565952852357
+}

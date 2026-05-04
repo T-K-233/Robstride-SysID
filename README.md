@@ -42,12 +42,27 @@ uv run tests/check_recovery.py --recordings data/sim/ --out-dir results/sim/ --r
 
 ## Actuator parameters
 
-Manufacturer specs and joint parameters identified by this pipeline
-(output-side). `J` (armature) lumps rotor inertia + reflected gearbox
-inertia; `b` is viscous damping; `Fc` is Coulomb friction. Identified
-columns are filled in as `analyze.py --model <X>` converges across
-multiple runs.
+Joint parameters identified by `analyze.py` (output-side), reported as
+mean ± relative stddev across `n` runs. `J` (armature) lumps rotor
+inertia + reflected gearbox inertia; `b` is viscous damping; `Fc` is
+Coulomb friction.
 
-| model | reduction | rated / peak torque | torque const. | weight | `J` (kg·m²) | `b` (N·m·s/rad) | `Fc` (N·m) |
-|-------|----------:|--------------------:|--------------:|-------:|------------:|----------------:|-----------:|
-| rs-02 |   7.75:1  |        6 / 17 N·m   | 1.22 N·m/Arms | 380 g  |    TBD      |       TBD       |    TBD     |
+| model | n | `J` (kg·m²)     | `b` (N·m·s/rad) | `Fc` (N·m)    |
+|-------|--:|----------------:|----------------:|--------------:|
+| rs-00 | 3 | 0.0149 ± 11%    | 0.054 ± 129%    | 0.233 ± 46%   |
+| rs-02 | 3 | 0.01369 ± 1.7%  | 0.0035 ± 33%    | 0.159 ± 3.7%  |
+| rs-05 | 3 | 0.00678 ± 6.5%  | 0 (rail)        | 0.309 ± 22%   |
+| rs-06 | 3 | 0.01647 ± 5.9%  | 0.0093 ± 141%   | 0.169 ± 59%   |
+
+`J` is the most robust output: 1.7–11% relative spread across runs.
+`b` and `Fc` trade off when the multisine + chirp excitation doesn't
+visit low-velocity dwell long enough to disambiguate viscous from
+Coulomb dissipation, so high-variance columns are an identifiability
+hint, not a reproducibility hint. RS-02 happens to give a clean fit
+on `Fc` here; RS-05's `b` pins to the lower bound on every run (all
+dissipation lands in `Fc`); RS-00's run 3 and RS-06's run 2 land in
+alternate minima where `b` and `Fc` swap roles.
+
+RS-02 manufacturer reference (from the user manual): 7.75:1 reduction,
+6 / 17 N·m rated/peak torque, 1.22 N·m/Arms torque constant, 380 g,
+14-bit absolute output-side encoder.

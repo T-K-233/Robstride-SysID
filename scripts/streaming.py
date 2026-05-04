@@ -6,10 +6,7 @@ probe, the per-step state read, the fault-abort path, and the zero-on-exit
 safety move all live here.
 """
 
-
-
 import time
-from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np

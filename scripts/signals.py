@@ -4,8 +4,6 @@
 and hardware see identical excitation.
 """
 
-
-
 import numpy as np
 
 

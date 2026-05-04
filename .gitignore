@@ -11,4 +11,3 @@ wheels/
 
 # Experiment artifacts (per-run recordings and fit outputs)
 data/
-results/
