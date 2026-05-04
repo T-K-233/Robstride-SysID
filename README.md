@@ -62,7 +62,3 @@ hint, not a reproducibility hint. RS-02 happens to give a clean fit
 on `Fc` here; RS-05's `b` pins to the lower bound on every run (all
 dissipation lands in `Fc`); RS-00's run 3 and RS-06's run 2 land in
 alternate minima where `b` and `Fc` swap roles.
-
-RS-02 manufacturer reference (from the user manual): 7.75:1 reduction,
-6 / 17 N·m rated/peak torque, 1.22 N·m/Arms torque constant, 380 g,
-14-bit absolute output-side encoder.
